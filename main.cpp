@@ -224,9 +224,34 @@ int main(int argc, char** argv)
         "ground_rect_plane");
 
     // Add point cloud
-    viewer.addPointCloud<pcl::PointXYZI>(cloud_filtered, "kitti_cloud");
-    viewer.setBackgroundColor(0,0,0);
-    viewer.initCameraParameters();
+    // --- build an RGB cloud with blue/white coloring ---
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_color(new pcl::PointCloud<pcl::PointXYZRGB>);
+    cloud_color->reserve(cloud_filtered->size());
+    
+    const float thresh = 0.5f;  // 0.5m above ground
+    for (auto &pt : cloud_filtered->points) {
+        pcl::PointXYZRGB p;
+        p.x = pt.x; 
+        p.y = pt.y; 
+        p.z = pt.z;
+    
+        if ( (pt.z - ground_z_plane) <= thresh ) {
+          // “near ground” → blue
+          p.r =   0; p.g =   0; p.b = 255;
+        } else {
+          // above threshold → white
+          p.r = 255; p.g = 255; p.b = 255;
+        }
+        cloud_color->push_back(p);
+    }
+    cloud_color->width  = cloud_color->size();
+    cloud_color->height = 1;
+    cloud_color->is_dense = cloud_filtered->is_dense;
+    
+    // --- visualize the colored cloud instead ---
+    viewer.addPointCloud<pcl::PointXYZRGB>(cloud_color, "colored_cloud");
+    viewer.setPointCloudRenderingProperties(
+        pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "colored_cloud");
 
     // Grab the underlying VTK interactor and replace its style:
     // assume coef_plane holds your RANSAC plane coefficients [a_plane,b_plane,c_plane,d_plane]
