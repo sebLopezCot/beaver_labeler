@@ -1,4 +1,5 @@
 BeaverLabeler
+
 ##############
 
 Data:
@@ -22,5 +23,5 @@ make -j$(nproc)
 
 Run:
 ```
-/run.sh data/2011_09_26/2011_09_26_drive_0020_sync/velodyne_points/data/0000000008.bin 
+./run.sh data/2011_09_26/2011_09_26_drive_0020_sync/velodyne_points/data/0000000008.bin 
 ```
