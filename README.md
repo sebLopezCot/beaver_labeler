@@ -4,7 +4,7 @@ BeaverLabeler
 Data:
 ```
 mkdir data && cd data
-get https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0020/2011_09_26_drive_0020_sync.zip
+wget https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0020/2011_09_26_drive_0020_sync.zip
 unzip 2011_09_26_drive_0020_sync.zip
 ```
 
