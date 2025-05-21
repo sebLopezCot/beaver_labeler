@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -27,101 +28,156 @@
 #include <vtkCommand.h>
 #include <vtkRenderWindowInteractor.h>
 
-class GroundBoxPicker : public vtkCommand {
+#include <vtkSmartPointer.h>
+#include <vtkCommand.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkMath.h>
+
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/point_types.h>
+
+
+class GroundBoxTool : public vtkCommand {
 public:
-  static GroundBoxPicker* New() { return new GroundBoxPicker; }
+  static GroundBoxTool* New() { return new GroundBoxTool; }
+  vtkTypeMacro(GroundBoxTool, vtkCommand);
 
-  vtkTypeMacro(GroundBoxPicker, vtkCommand);
+  GroundBoxTool()
+    : vActive(false),
+      state(0),
+      box_height(2.0),
+      box_id(0),
+      marker_id(0),
+      viewer(nullptr)
+  {
+    // default ground plane = z=0
+    ground_n[0]=0; ground_n[1]=0; ground_n[2]=1; d=0;
+  }
 
-  GroundBoxPicker()
-    : state(0), box_height(2.0), viewer(nullptr)
-  {}
-
-  /// Set the PCLVisualizer so we can call addCube()
   void setViewer(pcl::visualization::PCLVisualizer* v) {
     viewer = v;
   }
-
-  /// Provide your fitted plane normal (nx,ny,nz) and d so you solve n·x + d = 0
   void setPlane(double nx, double ny, double nz, double d_) {
-    // normalize
     double len = std::sqrt(nx*nx + ny*ny + nz*nz);
-    ground_n[0] = nx/len; ground_n[1] = ny/len; ground_n[2] = nz/len;
-    d = d_;
+    if (len>1e-6) {
+      ground_n[0]=nx/len; ground_n[1]=ny/len; ground_n[2]=nz/len;
+      d = d_;
+    }
   }
-
-  /// Fixed height above ground
   void setBoxHeight(double h) { box_height = h; }
 
-  void Execute(vtkObject* caller, unsigned long eventId, void* /*callData*/) override {
-    if (eventId != vtkCommand::LeftButtonPressEvent || !viewer) return;
-
+  void Execute(vtkObject* caller, unsigned long eventId, void*) override {
+    if (!viewer) return;
     auto iren = static_cast<vtkRenderWindowInteractor*>(caller);
-    int xy[2];
-    iren->GetEventPosition(xy);
 
-    // 1) Unproject click into a world‐space ray (near & far points)
-    auto renderer = viewer->getRenderWindow()
-                         ->GetRenderers()
-                         ->GetFirstRenderer();
-    // get near point
-    renderer->SetDisplayPoint(xy[0], xy[1], 0.0);
-    renderer->DisplayToWorld();
-    double p0[4]; renderer->GetWorldPoint(p0);
-    for(int i=0;i<3;++i) p0[i] /= p0[3];
-    // get far point
-    renderer->SetDisplayPoint(xy[0], xy[1], 1.0);
-    renderer->DisplayToWorld();
-    double p1[4]; renderer->GetWorldPoint(p1);
-    for(int i=0;i<3;++i) p1[i] /= p1[3];
-
-    // 2) intersect ray with plane:  n·(P0 + t*(P1−P0)) + d = 0
-    double dir[3] = { p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2] };
-    double denom = vtkMath::Dot(ground_n, dir);
-    if (std::abs(denom) < 1e-6) return;  // ray parallel
-    double numer = -(vtkMath::Dot(ground_n, p0) + d);
-    double t = numer/denom;
-    double xi = p0[0] + t*dir[0];
-    double yi = p0[1] + t*dir[1];
-    double zi = p0[2] + t*dir[2];
-
-    // 3) record the two corners
-    if (state == 0) {
-      c1[0]=xi; c1[1]=yi; c1[2]=zi;
-      state = 1;
-      std::cout<<"Corner 1: ("<<xi<<","<<yi<<")\n";
+    // --- Handle key presses ---
+    if (eventId == vtkCommand::KeyPressEvent) {
+      std::string key = iren->GetKeySym();
+      if (key=="v"||key=="V") {
+        vActive = true;
+      } else if (key=="BackSpace") {
+        // undo last box
+        if (!boxIds.empty()) {
+          viewer->removeShape(boxIds.back());
+          boxIds.pop_back();
+        }
+      }
+      return;
     }
-    else {
-      double c2[3] = {xi, yi, zi};
-      // compute axis‐aligned box from c1 & c2
-      double xmin = std::min(c1[0], c2[0]);
-      double xmax = std::max(c1[0], c2[0]);
-      double ymin = std::min(c1[1], c2[1]);
-      double ymax = std::max(c1[1], c2[1]);
-      double zmin = zi;               // ground plane height
-      double zmax = zmin + box_height;
+    if (eventId == vtkCommand::KeyReleaseEvent) {
+      std::string key = iren->GetKeySym();
+      if (key=="v"||key=="V") {
+        vActive = false;
+      }
+      return;
+    }
 
-      // 4) draw the cube
-      auto id = std::string("ground_box_") + std::to_string(box_id++);
-      viewer->addCube(xmin, xmax, ymin, ymax, zmin, zmax, 
-                      0.0, 1.0, 0.0,  // green wireframe
-                      id, 0);
-      viewer->setShapeRenderingProperties(
-        pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
-        pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME,
-        id);
+    // --- Handle mouse click only if V is held ---
+    if (eventId == vtkCommand::LeftButtonPressEvent && vActive) {
+      int xy[2];
+      iren->GetEventPosition(xy);
+      // unproject to world ray
+      auto ren = viewer->getRenderWindow()
+                       ->GetRenderers()
+                       ->GetFirstRenderer();
+      // near
+      ren->SetDisplayPoint(xy[0], xy[1], 0.0);
+      ren->DisplayToWorld();
+      double p0[4]; ren->GetWorldPoint(p0);
+      for(int i=0;i<3;++i) p0[i]/=p0[3];
+      // far
+      ren->SetDisplayPoint(xy[0], xy[1], 1.0);
+      ren->DisplayToWorld();
+      double p1[4]; ren->GetWorldPoint(p1);
+      for(int i=0;i<3;++i) p1[i]/=p1[3];
 
-      state = 0;
+      // intersect ray with plane
+      double dir[3] = {p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]};
+      double denom = vtkMath::Dot(ground_n, dir);
+      if (std::abs(denom)<1e-6) return;  // parallel
+      double numer = -(vtkMath::Dot(ground_n, p0) + d);
+      double t = numer/denom;
+      double xi = p0[0] + t*dir[0];
+      double yi = p0[1] + t*dir[1];
+      double zi = p0[2] + t*dir[2];
+
+      if (state==0) {
+        // first corner
+        c1[0]=xi; c1[1]=yi; c1[2]=zi;
+        // place a sphere marker
+        std::string mid = "corner_sphere_" + std::to_string(marker_id++);
+        markerIds.push_back(mid);
+        viewer->addSphere(
+          pcl::PointXYZ(c1[0],c1[1],c1[2]),
+          0.1,            // radius
+          1.0,0.0,0.0,    // red
+          mid, 0
+        );
+        state=1;
+      }
+      else {
+        // second corner → finalize box
+        double c2[3]={xi, yi, zi};
+        double xmin = std::min(c1[0],c2[0]);
+        double xmax = std::max(c1[0],c2[0]);
+        double ymin = std::min(c1[1],c2[1]);
+        double ymax = std::max(c1[1],c2[1]);
+        double zmin = (vtkMath::Dot(ground_n,c1)+d<1e-3? c1[2] : zi);
+        // use the plane's actual intersection z
+        zmin = zi;
+        double zmax = zmin + box_height;
+
+        std::string bid = "ground_box_" + std::to_string(box_id++);
+        viewer->addCube(
+          xmin,xmax, ymin,ymax, zmin,zmax,
+          0.0,1.0,0.0,  // green box
+          bid, 0
+        );
+        viewer->setShapeRenderingProperties(
+          pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
+          pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME,
+          bid
+        );
+        boxIds.push_back(bid);
+
+        // clear corner markers
+        for (auto &m : markerIds) viewer->removeShape(m);
+        markerIds.clear();
+        state=0;
+      }
     }
   }
 
 private:
-  int    state;            // 0 = waiting for first click, 1 = waiting for second
-  double c1[3];            // first corner
-  double ground_n[3], d;   // plane
-  double box_height;       
-  int    box_id = 0;       
-  pcl::visualization::PCLVisualizer* viewer;
+  bool                                        vActive;
+  int                                         state;       // 0 = waiting corner1, 1 = corner2
+  double                                      c1[3];
+  double                                      ground_n[3], d;
+  double                                      box_height;
+  int                                         box_id, marker_id;
+  pcl::visualization::PCLVisualizer*          viewer;
+  std::vector<std::string>                    boxIds;
+  std::vector<std::string>                    markerIds;
 };
 
 
@@ -401,21 +457,24 @@ int main(int argc, char** argv)
       }
     }
 
-    // 1) Create and configure the picker
-    auto picker = vtkSmartPointer<GroundBoxPicker>::New();
-    picker->setViewer(&viewer);
-    picker->setPlane(
-      coef_plane->values[0],
-      coef_plane->values[1],
-      coef_plane->values[2],
-      coef_plane->values[3]
-    );
-    picker->setBoxHeight(1.8);  // e.g. standard car height
-    
-    // 2) Install on the interactor
-    auto iren2 = viewer.getRenderWindow()->GetInteractor();
-    iren2->AddObserver(vtkCommand::LeftButtonPressEvent, picker);
-    
+   // Annotation tool
+   auto tool = vtkSmartPointer<GroundBoxTool>::New();
+   tool->setViewer(&viewer);
+   tool->setPlane(
+     coef_plane->values[0],
+     coef_plane->values[1],
+     coef_plane->values[2],
+     coef_plane->values[3]
+   );
+   tool->setBoxHeight(1.8);  // e.g. 1.8 m tall boxes
+   
+   auto iren2 = viewer.getRenderWindow()->GetInteractor();
+   // listen for V‐key and Backspace
+   iren2->AddObserver(vtkCommand::KeyPressEvent,   tool);
+   iren2->AddObserver(vtkCommand::KeyReleaseEvent, tool);
+   // listen for clicks
+   iren2->AddObserver(vtkCommand::LeftButtonPressEvent, tool);
+ 
     while (!viewer.wasStopped()) {
       viewer.spinOnce(10);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
