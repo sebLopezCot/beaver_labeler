@@ -18,42 +18,54 @@
 #include <vtkRendererCollection.h>
 #include <vtkRenderer.h>
 #include <vtkCamera.h>
+#include <cmath>
 
-class OrbitInteractorStyle : public vtkInteractorStyleTrackballCamera {
+class HorizonInteractorStyle : public vtkInteractorStyleTrackballCamera {
 public:
-  static OrbitInteractorStyle* New();
-  vtkTypeMacro(OrbitInteractorStyle, vtkInteractorStyleTrackballCamera);
+  static HorizonInteractorStyle* New();
+  vtkTypeMacro(HorizonInteractorStyle, vtkInteractorStyleTrackballCamera);
 
-  // Override but forward everything to the base class:
+  /// Call this once with your RANSAC plane normal (a_plane,b_plane,c_plane)
+  void SetGroundNormal(double nx, double ny, double nz) {
+    double len = std::sqrt(nx*nx + ny*ny + nz*nz);
+    if (len > 0.0) {
+      groundNormal[0] = nx/len;
+      groundNormal[1] = ny/len;
+      groundNormal[2] = nz/len;
+    }
+  }
+
   void OnLeftButtonDown() override {
+    // remember focal point so we always orbit around it
+    this->GetCurrentRenderer()
+        ->GetActiveCamera()
+        ->GetFocalPoint(focalPoint);
     vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
   }
-  void OnLeftButtonUp() override {
-    vtkInteractorStyleTrackballCamera::OnLeftButtonUp();
-  }
-  void OnMiddleButtonDown() override {
-    vtkInteractorStyleTrackballCamera::OnMiddleButtonDown();
-  }
-  void OnMiddleButtonUp() override {
-    vtkInteractorStyleTrackballCamera::OnMiddleButtonUp();
-  }
-  void OnRightButtonDown() override {
-    vtkInteractorStyleTrackballCamera::OnRightButtonDown();
-  }
-  void OnRightButtonUp() override {
-    vtkInteractorStyleTrackballCamera::OnRightButtonUp();
-  }
+
   void OnMouseMove() override {
-    vtkInteractorStyleTrackballCamera::OnMouseMove();
+    if (this->State == VTKIS_ROTATE) {
+      // perform the default yaw/pitch/roll
+      vtkInteractorStyleTrackballCamera::OnMouseMove();
+
+      // then immediately enforce our “no roll” horizon
+      vtkCamera* cam = this->GetCurrentRenderer()->GetActiveCamera();
+      cam->SetViewUp(groundNormal);          // horizon = ground plane
+      cam->OrthogonalizeViewUp();            // clean up any drift
+      cam->SetFocalPoint(focalPoint);        // keep look‐at fixed
+      this->GetInteractor()->GetRenderWindow()->Render();
+    }
+    else {
+      vtkInteractorStyleTrackballCamera::OnMouseMove();
+    }
   }
-  void OnMouseWheelForward() override {
-    vtkInteractorStyleTrackballCamera::OnMouseWheelForward();
-  }
-  void OnMouseWheelBackward() override {
-    vtkInteractorStyleTrackballCamera::OnMouseWheelBackward();
-  }
+
+private:
+  double groundNormal[3] = {0,0,1};         // default to world Z
+  double focalPoint[3]    = {0,0,0};
 };
-vtkStandardNewMacro(OrbitInteractorStyle);
+
+vtkStandardNewMacro(HorizonInteractorStyle);
 
 
 int main(int argc, char** argv)
@@ -182,10 +194,19 @@ int main(int argc, char** argv)
     viewer.initCameraParameters();
 
     // Grab the underlying VTK interactor and replace its style:
+    // assume coef_plane holds your RANSAC plane coefficients [a_plane,b_plane,c_plane,d_plane]
+    double nx_plane = coef_plane->values[0];
+    double ny_plane = coef_plane->values[1];
+    double nz_plane = coef_plane->values[2];
+    
+    // set up the style on your PCLVisualizer’s interactor
     auto iren = viewer.getRenderWindow()->GetInteractor();
-    vtkSmartPointer<OrbitInteractorStyle> style = vtkSmartPointer<OrbitInteractorStyle>::New();
-    style->SetCurrentRenderer(viewer.getRendererCollection()->GetFirstRenderer());
-    iren->SetInteractorStyle(style);
+    vtkSmartPointer<HorizonInteractorStyle> horizonStyle =
+        vtkSmartPointer<HorizonInteractorStyle>::New();
+    horizonStyle->SetCurrentRenderer(
+        viewer.getRendererCollection()->GetFirstRenderer());
+    horizonStyle->SetGroundNormal(nx_plane, ny_plane, nz_plane);
+    iren->SetInteractorStyle(horizonStyle);
 
 
     // ---- bird's-eye initial view ----
