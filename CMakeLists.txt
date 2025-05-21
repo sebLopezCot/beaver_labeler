@@ -10,6 +10,7 @@ find_package(PCL 1.12 REQUIRED COMPONENTS
   visualization
   filters
   segmentation
+  search
 )
 
 include_directories(${PCL_INCLUDE_DIRS})

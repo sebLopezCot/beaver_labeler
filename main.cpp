@@ -4,6 +4,8 @@
 #include <vector>
 #include <thread>
 
+#include <Eigen/Core>
+
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>            // for saving if you want
@@ -19,6 +21,98 @@
 #include <vtkRenderer.h>
 #include <vtkCamera.h>
 #include <vtkMath.h>
+
+#include <pcl/visualization/point_picking_event.h>
+#include <pcl/search/kdtree.h>
+#include <pcl/filters/extract_indices.h>
+
+#include <vtkCellPicker.h>
+
+// define a little struct to carry data into the callback
+struct PickerData {
+  pcl::visualization::PCLVisualizer* viewer;
+  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+  pcl::search::KdTree<pcl::PointXYZI>::Ptr tree;
+  double ground_z_plane;
+  int box_count = 0;
+};
+
+// the callback itself
+void pickPointEvent(const pcl::visualization::PointPickingEvent& event, void* vd)
+{
+  std::cout << "Pick point event triggered!" << std::endl;
+  auto data = static_cast<PickerData*>(vd);
+
+  if (!event.getPointIndex())  // no valid pick
+    return;
+
+  // 1) get the clicked point in world coords
+  float x,y,z;
+  event.getPoint(x,y,z);
+  pcl::PointXYZI clicked; clicked.x=x; clicked.y=y; clicked.z=z;
+
+  // 2) find the nearest actual cloud point to that click
+  std::vector<int> nn_idx(1);
+  std::vector<float> nn_dist(1);
+  if (data->tree->nearestKSearch(clicked, 1, nn_idx, nn_dist) == 0)
+    return;
+  pcl::PointXYZI seed = data->cloud->points[nn_idx[0]];
+
+  // 3) radius‐search around seed, excluding “ground” points
+  const float cluster_radius = 2.5f;     // meters
+  const float ground_thresh   = 0.5f;    // meters above ground
+  std::vector<int> r_inds;
+  std::vector<float> r_dist;
+  data->tree->radiusSearch(seed, cluster_radius, r_inds, r_dist);
+
+  pcl::PointIndices::Ptr cluster_inds(new pcl::PointIndices);
+  for (int i : r_inds) {
+    auto &pt = data->cloud->points[i];
+    if ((pt.z - data->ground_z_plane) > ground_thresh)
+      cluster_inds->indices.push_back(i);
+  }
+  if (cluster_inds->indices.empty()) return;
+
+  // 4) abort if cluster’s bounding‐box too big for a car
+  //    but first compute min/max using the Eigen overload:
+  Eigen::Vector4f min_eig, max_eig;
+  pcl::getMinMax3D(
+      *data->cloud,
+      *cluster_inds,
+      min_eig,
+      max_eig
+  );
+  
+  // now copy into PointXYZI
+  pcl::PointXYZI min_pt, max_pt;
+  min_pt.x = min_eig[0];  min_pt.y = min_eig[1];  min_pt.z = min_eig[2];
+  max_pt.x = max_eig[0];  max_pt.y = max_eig[1];  max_pt.z = max_eig[2];
+  
+  // compute extents
+  double dx = max_pt.x - min_pt.x;
+  double dy = max_pt.y - min_pt.y;
+  double dz = max_pt.z - min_pt.z;
+  if (dx > 5.0 || dy > 2.5 || dz > 2.5) {
+    std::cout << "[Picker] cluster too large (" 
+              << dx << "," << dy << "," << dz << ") – abort\n";
+    return;
+  } 
+
+  // 5) draw an axis‐aligned box
+  std::string id = "car_box_" + std::to_string(data->box_count++);
+  data->viewer->addCube(
+    min_pt.x, max_pt.x,
+    min_pt.y, max_pt.y,
+    min_pt.z, max_pt.z,
+    1.0, 0.0, 0.0,
+    id, 0
+  );
+  data->viewer->setShapeRenderingProperties(
+    pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
+    pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME,
+    id
+  );
+}
 
 class HorizonInteractorStyle : public vtkInteractorStyleTrackballCamera {
 public:
@@ -251,7 +345,7 @@ int main(int argc, char** argv)
     // --- visualize the colored cloud instead ---
     viewer.addPointCloud<pcl::PointXYZRGB>(cloud_color, "colored_cloud");
     viewer.setPointCloudRenderingProperties(
-        pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "colored_cloud");
+        pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 5, "colored_cloud");
 
     // Grab the underlying VTK interactor and replace its style:
     // assume coef_plane holds your RANSAC plane coefficients [a_plane,b_plane,c_plane,d_plane]
@@ -267,6 +361,7 @@ int main(int argc, char** argv)
         viewer.getRendererCollection()->GetFirstRenderer());
     horizonStyle->SetGroundNormal(nx_plane, ny_plane, nz_plane);
     iren->SetInteractorStyle(horizonStyle);
+    
 
 
     // ---- bird's-eye initial view ----
@@ -294,6 +389,19 @@ int main(int argc, char** argv)
         ren->ResetCameraClippingRange();
       }
     }
+
+    // build a KdTree for fast picks & clustering:
+    auto tree = pcl::make_shared<pcl::search::KdTree<pcl::PointXYZI>>();
+    tree->setInputCloud(cloud_filtered);
+    
+    // set up the callback data
+    PickerData pd;
+    pd.viewer         = &viewer;
+    pd.cloud          = cloud_filtered;
+    pd.tree           = tree;
+    pd.ground_z_plane = ground_z_plane;
+   
+    viewer.registerPointPickingCallback(pickPointEvent, (void*)&pd);
 
     while (!viewer.wasStopped()) {
       viewer.spinOnce(10);
