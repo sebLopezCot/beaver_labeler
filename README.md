@@ -1,6 +1,5 @@
-BeaverLabeler
-
-##############
+# BeaverLabeler
+--------
 
 Data:
 ```
