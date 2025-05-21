@@ -2,6 +2,8 @@
 
 This is a simple tool to label KITTI dataset scenes with bounding boxes.
 
+![capture](https://raw.githubusercontent.com/sebLopezCot/beaver_labeler/refs/heads/master/images/capture.png)
+
 Features:
  - Fit ground plane with RANSAC
  - Rotation approximates an orbit with roll = 0 (a bit jittery at the moment)
