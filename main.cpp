@@ -3,6 +3,8 @@
 #include <fstream>
 #include <vector>
 #include <thread>
+#include <string>
+#include <algorithm>
 
 #include <Eigen/Core>
 
@@ -22,97 +24,106 @@
 #include <vtkCamera.h>
 #include <vtkMath.h>
 
-#include <pcl/visualization/point_picking_event.h>
-#include <pcl/search/kdtree.h>
-#include <pcl/filters/extract_indices.h>
+#include <vtkCommand.h>
+#include <vtkRenderWindowInteractor.h>
 
-#include <vtkCellPicker.h>
+class GroundBoxPicker : public vtkCommand {
+public:
+  static GroundBoxPicker* New() { return new GroundBoxPicker; }
 
-// define a little struct to carry data into the callback
-struct PickerData {
+  vtkTypeMacro(GroundBoxPicker, vtkCommand);
+
+  GroundBoxPicker()
+    : state(0), box_height(2.0), viewer(nullptr)
+  {}
+
+  /// Set the PCLVisualizer so we can call addCube()
+  void setViewer(pcl::visualization::PCLVisualizer* v) {
+    viewer = v;
+  }
+
+  /// Provide your fitted plane normal (nx,ny,nz) and d so you solve n·x + d = 0
+  void setPlane(double nx, double ny, double nz, double d_) {
+    // normalize
+    double len = std::sqrt(nx*nx + ny*ny + nz*nz);
+    ground_n[0] = nx/len; ground_n[1] = ny/len; ground_n[2] = nz/len;
+    d = d_;
+  }
+
+  /// Fixed height above ground
+  void setBoxHeight(double h) { box_height = h; }
+
+  void Execute(vtkObject* caller, unsigned long eventId, void* /*callData*/) override {
+    if (eventId != vtkCommand::LeftButtonPressEvent || !viewer) return;
+
+    auto iren = static_cast<vtkRenderWindowInteractor*>(caller);
+    int xy[2];
+    iren->GetEventPosition(xy);
+
+    // 1) Unproject click into a world‐space ray (near & far points)
+    auto renderer = viewer->getRenderWindow()
+                         ->GetRenderers()
+                         ->GetFirstRenderer();
+    // get near point
+    renderer->SetDisplayPoint(xy[0], xy[1], 0.0);
+    renderer->DisplayToWorld();
+    double p0[4]; renderer->GetWorldPoint(p0);
+    for(int i=0;i<3;++i) p0[i] /= p0[3];
+    // get far point
+    renderer->SetDisplayPoint(xy[0], xy[1], 1.0);
+    renderer->DisplayToWorld();
+    double p1[4]; renderer->GetWorldPoint(p1);
+    for(int i=0;i<3;++i) p1[i] /= p1[3];
+
+    // 2) intersect ray with plane:  n·(P0 + t*(P1−P0)) + d = 0
+    double dir[3] = { p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2] };
+    double denom = vtkMath::Dot(ground_n, dir);
+    if (std::abs(denom) < 1e-6) return;  // ray parallel
+    double numer = -(vtkMath::Dot(ground_n, p0) + d);
+    double t = numer/denom;
+    double xi = p0[0] + t*dir[0];
+    double yi = p0[1] + t*dir[1];
+    double zi = p0[2] + t*dir[2];
+
+    // 3) record the two corners
+    if (state == 0) {
+      c1[0]=xi; c1[1]=yi; c1[2]=zi;
+      state = 1;
+      std::cout<<"Corner 1: ("<<xi<<","<<yi<<")\n";
+    }
+    else {
+      double c2[3] = {xi, yi, zi};
+      // compute axis‐aligned box from c1 & c2
+      double xmin = std::min(c1[0], c2[0]);
+      double xmax = std::max(c1[0], c2[0]);
+      double ymin = std::min(c1[1], c2[1]);
+      double ymax = std::max(c1[1], c2[1]);
+      double zmin = zi;               // ground plane height
+      double zmax = zmin + box_height;
+
+      // 4) draw the cube
+      auto id = std::string("ground_box_") + std::to_string(box_id++);
+      viewer->addCube(xmin, xmax, ymin, ymax, zmin, zmax, 
+                      0.0, 1.0, 0.0,  // green wireframe
+                      id, 0);
+      viewer->setShapeRenderingProperties(
+        pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
+        pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME,
+        id);
+
+      state = 0;
+    }
+  }
+
+private:
+  int    state;            // 0 = waiting for first click, 1 = waiting for second
+  double c1[3];            // first corner
+  double ground_n[3], d;   // plane
+  double box_height;       
+  int    box_id = 0;       
   pcl::visualization::PCLVisualizer* viewer;
-  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
-  pcl::search::KdTree<pcl::PointXYZI>::Ptr tree;
-  double ground_z_plane;
-  int box_count = 0;
 };
 
-// the callback itself
-void pickPointEvent(const pcl::visualization::PointPickingEvent& event, void* vd)
-{
-  std::cout << "Pick point event triggered!" << std::endl;
-  auto data = static_cast<PickerData*>(vd);
-
-  if (!event.getPointIndex())  // no valid pick
-    return;
-
-  // 1) get the clicked point in world coords
-  float x,y,z;
-  event.getPoint(x,y,z);
-  pcl::PointXYZI clicked; clicked.x=x; clicked.y=y; clicked.z=z;
-
-  // 2) find the nearest actual cloud point to that click
-  std::vector<int> nn_idx(1);
-  std::vector<float> nn_dist(1);
-  if (data->tree->nearestKSearch(clicked, 1, nn_idx, nn_dist) == 0)
-    return;
-  pcl::PointXYZI seed = data->cloud->points[nn_idx[0]];
-
-  // 3) radius‐search around seed, excluding “ground” points
-  const float cluster_radius = 2.5f;     // meters
-  const float ground_thresh   = 0.5f;    // meters above ground
-  std::vector<int> r_inds;
-  std::vector<float> r_dist;
-  data->tree->radiusSearch(seed, cluster_radius, r_inds, r_dist);
-
-  pcl::PointIndices::Ptr cluster_inds(new pcl::PointIndices);
-  for (int i : r_inds) {
-    auto &pt = data->cloud->points[i];
-    if ((pt.z - data->ground_z_plane) > ground_thresh)
-      cluster_inds->indices.push_back(i);
-  }
-  if (cluster_inds->indices.empty()) return;
-
-  // 4) abort if cluster’s bounding‐box too big for a car
-  //    but first compute min/max using the Eigen overload:
-  Eigen::Vector4f min_eig, max_eig;
-  pcl::getMinMax3D(
-      *data->cloud,
-      *cluster_inds,
-      min_eig,
-      max_eig
-  );
-  
-  // now copy into PointXYZI
-  pcl::PointXYZI min_pt, max_pt;
-  min_pt.x = min_eig[0];  min_pt.y = min_eig[1];  min_pt.z = min_eig[2];
-  max_pt.x = max_eig[0];  max_pt.y = max_eig[1];  max_pt.z = max_eig[2];
-  
-  // compute extents
-  double dx = max_pt.x - min_pt.x;
-  double dy = max_pt.y - min_pt.y;
-  double dz = max_pt.z - min_pt.z;
-  if (dx > 5.0 || dy > 2.5 || dz > 2.5) {
-    std::cout << "[Picker] cluster too large (" 
-              << dx << "," << dy << "," << dz << ") – abort\n";
-    return;
-  } 
-
-  // 5) draw an axis‐aligned box
-  std::string id = "car_box_" + std::to_string(data->box_count++);
-  data->viewer->addCube(
-    min_pt.x, max_pt.x,
-    min_pt.y, max_pt.y,
-    min_pt.z, max_pt.z,
-    1.0, 0.0, 0.0,
-    id, 0
-  );
-  data->viewer->setShapeRenderingProperties(
-    pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
-    pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME,
-    id
-  );
-}
 
 class HorizonInteractorStyle : public vtkInteractorStyleTrackballCamera {
 public:
@@ -390,19 +401,21 @@ int main(int argc, char** argv)
       }
     }
 
-    // build a KdTree for fast picks & clustering:
-    auto tree = pcl::make_shared<pcl::search::KdTree<pcl::PointXYZI>>();
-    tree->setInputCloud(cloud_filtered);
+    // 1) Create and configure the picker
+    auto picker = vtkSmartPointer<GroundBoxPicker>::New();
+    picker->setViewer(&viewer);
+    picker->setPlane(
+      coef_plane->values[0],
+      coef_plane->values[1],
+      coef_plane->values[2],
+      coef_plane->values[3]
+    );
+    picker->setBoxHeight(1.8);  // e.g. standard car height
     
-    // set up the callback data
-    PickerData pd;
-    pd.viewer         = &viewer;
-    pd.cloud          = cloud_filtered;
-    pd.tree           = tree;
-    pd.ground_z_plane = ground_z_plane;
-   
-    viewer.registerPointPickingCallback(pickPointEvent, (void*)&pd);
-
+    // 2) Install on the interactor
+    auto iren2 = viewer.getRenderWindow()->GetInteractor();
+    iren2->AddObserver(vtkCommand::LeftButtonPressEvent, picker);
+    
     while (!viewer.wasStopped()) {
       viewer.spinOnce(10);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
