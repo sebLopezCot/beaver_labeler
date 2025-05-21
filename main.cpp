@@ -62,14 +62,26 @@ int main(int argc, char** argv)
     float cx = (min_pt.x + max_pt.x) * 0.5f;
     float cy = (min_pt.y + max_pt.y) * 0.5f;
     float cz = (min_pt.z + max_pt.z) * 0.5f;
-    // position camera height = vertical span + extra margin
-    float height = (max_pt.z - min_pt.z) + 10.0f;
+    // compute XY span and back off far enough 
+    float dx = max_pt.x - min_pt.x;
+    float dy = max_pt.y - min_pt.y;
+    float span = std::max(dx, dy);
+    float height = span * 1.25f;
     // camera_x, camera_y, camera_z, view_x, view_y, view_z, up_x, up_y, up_z
     viewer.setCameraPosition(
       cx, cy, cz + height,
       cx, cy, cz,
       0.0, 1.0, 0.0   // Y‐axis as the “up” direction on screen
     );
+
+    // make sure near/far clipping planes encompass the whole cloud
+    {
+      auto rc = viewer.getRendererCollection();
+      if (rc->GetNumberOfItems() > 0) {
+        vtkRenderer* ren = rc->GetFirstRenderer();
+        ren->ResetCameraClippingRange();
+      }
+    }
 
     while (!viewer.wasStopped()) {
       viewer.spinOnce(10);
