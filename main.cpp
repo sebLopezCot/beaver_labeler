@@ -18,17 +18,22 @@
 #include <vtkRendererCollection.h>
 #include <vtkRenderer.h>
 #include <vtkCamera.h>
-#include <cmath>
+#include <vtkMath.h>
 
 class HorizonInteractorStyle : public vtkInteractorStyleTrackballCamera {
 public:
   static HorizonInteractorStyle* New();
   vtkTypeMacro(HorizonInteractorStyle, vtkInteractorStyleTrackballCamera);
 
+  HorizonInteractorStyle() {
+    // default ground normal = world Z
+    groundNormal[0]=0; groundNormal[1]=0; groundNormal[2]=1;
+  }
+
   /// Call this once with your RANSAC plane normal (a_plane,b_plane,c_plane)
   void SetGroundNormal(double nx, double ny, double nz) {
     double len = std::sqrt(nx*nx + ny*ny + nz*nz);
-    if (len > 0.0) {
+    if (len > 1e-6) {
       groundNormal[0] = nx/len;
       groundNormal[1] = ny/len;
       groundNormal[2] = nz/len;
@@ -36,23 +41,41 @@ public:
   }
 
   void OnLeftButtonDown() override {
-    // remember focal point so we always orbit around it
-    this->GetCurrentRenderer()
-        ->GetActiveCamera()
-        ->GetFocalPoint(focalPoint);
+    // record focal point to orbit around
+    this->GetCurrentRenderer()->GetActiveCamera()->GetFocalPoint(focalPoint);
     vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
   }
 
   void OnMouseMove() override {
     if (this->State == VTKIS_ROTATE) {
-      // perform the default yaw/pitch/roll
+      // let the base style apply yaw/pitch/roll
       vtkInteractorStyleTrackballCamera::OnMouseMove();
 
-      // then immediately enforce our “no roll” horizon
       vtkCamera* cam = this->GetCurrentRenderer()->GetActiveCamera();
-      cam->SetViewUp(groundNormal);          // horizon = ground plane
-      cam->OrthogonalizeViewUp();            // clean up any drift
-      cam->SetFocalPoint(focalPoint);        // keep look‐at fixed
+      double pos[3], fp[3], viewDir[3];
+      cam->GetPosition(pos);
+      cam->GetFocalPoint(fp);
+      // compute view direction vector (from camera to focal)
+      viewDir[0] = fp[0] - pos[0];
+      viewDir[1] = fp[1] - pos[1];
+      viewDir[2] = fp[2] - pos[2];
+      vtkMath::Normalize(viewDir);
+
+      // project groundNormal onto plane ⟂ viewDir: newUp = groundNormal − (groundNormal·viewDir)*viewDir
+      double dot = vtkMath::Dot(groundNormal, viewDir);
+      double newUp[3] = {
+        groundNormal[0] - dot*viewDir[0],
+        groundNormal[1] - dot*viewDir[1],
+        groundNormal[2] - dot*viewDir[2]
+      };
+      vtkMath::Normalize(newUp);
+
+      // enforce no‐roll: up = newUp, look at focalPoint
+      cam->SetViewUp(newUp);
+      cam->SetFocalPoint(focalPoint);
+      // ensure orthonormal basis
+      cam->OrthogonalizeViewUp();
+
       this->GetInteractor()->GetRenderWindow()->Render();
     }
     else {
@@ -61,12 +84,11 @@ public:
   }
 
 private:
-  double groundNormal[3] = {0,0,1};         // default to world Z
-  double focalPoint[3]    = {0,0,0};
+  double groundNormal[3];
+  double focalPoint[3];
 };
 
 vtkStandardNewMacro(HorizonInteractorStyle);
-
 
 int main(int argc, char** argv)
 {
