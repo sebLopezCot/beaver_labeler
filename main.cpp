@@ -40,6 +40,19 @@ public:
     }
   }
 
+  
+  // Treat right-click as middle-click for pan
+  void OnRightButtonDown() override {
+    // Forward to middle-button down (starts pan)
+    vtkInteractorStyleTrackballCamera::OnMiddleButtonDown();
+  }
+  
+  void OnRightButtonUp() override {
+    // Forward to middle-button up (ends pan)
+    vtkInteractorStyleTrackballCamera::OnMiddleButtonUp();
+  }
+
+
   void OnLeftButtonDown() override {
     // record focal point to orbit around
     this->GetCurrentRenderer()->GetActiveCamera()->GetFocalPoint(focalPoint);
