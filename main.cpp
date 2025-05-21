@@ -11,6 +11,48 @@
 #include <pcl/common/common.h>   // for getMinMax3D
 #include <pcl/filters/voxel_grid.h>
 
+#include <vtkSmartPointer.h>
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkRendererCollection.h>
+#include <vtkRenderer.h>
+#include <vtkCamera.h>
+
+class OrbitInteractorStyle : public vtkInteractorStyleTrackballCamera {
+public:
+  static OrbitInteractorStyle* New();
+  vtkTypeMacro(OrbitInteractorStyle, vtkInteractorStyleTrackballCamera);
+
+  // Override but forward everything to the base class:
+  void OnLeftButtonDown() override {
+    vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
+  }
+  void OnLeftButtonUp() override {
+    vtkInteractorStyleTrackballCamera::OnLeftButtonUp();
+  }
+  void OnMiddleButtonDown() override {
+    vtkInteractorStyleTrackballCamera::OnMiddleButtonDown();
+  }
+  void OnMiddleButtonUp() override {
+    vtkInteractorStyleTrackballCamera::OnMiddleButtonUp();
+  }
+  void OnRightButtonDown() override {
+    vtkInteractorStyleTrackballCamera::OnRightButtonDown();
+  }
+  void OnRightButtonUp() override {
+    vtkInteractorStyleTrackballCamera::OnRightButtonUp();
+  }
+  void OnMouseMove() override {
+    vtkInteractorStyleTrackballCamera::OnMouseMove();
+  }
+  void OnMouseWheelForward() override {
+    vtkInteractorStyleTrackballCamera::OnMouseWheelForward();
+  }
+  void OnMouseWheelBackward() override {
+    vtkInteractorStyleTrackballCamera::OnMouseWheelBackward();
+  }
+};
+vtkStandardNewMacro(OrbitInteractorStyle);
+
 
 int main(int argc, char** argv)
 {
@@ -54,6 +96,13 @@ int main(int argc, char** argv)
     viewer.addPointCloud<pcl::PointXYZI>(cloud_filtered, "kitti_cloud");
     viewer.setBackgroundColor(0,0,0);
     viewer.initCameraParameters();
+
+    // Grab the underlying VTK interactor and replace its style:
+    auto iren = viewer.getRenderWindow()->GetInteractor();
+    vtkSmartPointer<OrbitInteractorStyle> style = vtkSmartPointer<OrbitInteractorStyle>::New();
+    style->SetCurrentRenderer(viewer.getRendererCollection()->GetFirstRenderer());
+    iren->SetInteractorStyle(style);
+
 
     // ---- bird's-eye initial view ----
     // compute axis‐aligned bounding box to find center
