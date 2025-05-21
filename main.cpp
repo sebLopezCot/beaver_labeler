@@ -10,6 +10,8 @@
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/common/common.h>   // for getMinMax3D
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/ModelCoefficients.h>
 
 #include <vtkSmartPointer.h>
 #include <vtkInteractorStyleTrackballCamera.h>
@@ -93,6 +95,88 @@ int main(int argc, char** argv)
 
     // Visualize
     pcl::visualization::PCLVisualizer viewer("BeaverLabeler");
+    pcl::PointXYZI min_pt, max_pt;
+    pcl::getMinMax3D(*cloud_filtered, min_pt, max_pt);
+    
+    // 1) RANSAC‐based ground plane estimation
+    pcl::SACSegmentation<pcl::PointXYZI> seg_plane;
+    seg_plane.setOptimizeCoefficients(true);
+    seg_plane.setModelType(pcl::SACMODEL_PLANE);
+    seg_plane.setMethodType(pcl::SAC_RANSAC);
+    seg_plane.setDistanceThreshold(0.2);
+    seg_plane.setMaxIterations(1000);
+    seg_plane.setInputCloud(cloud_filtered);
+    
+    pcl::ModelCoefficients::Ptr coef_plane(new pcl::ModelCoefficients());
+    pcl::PointIndices::Ptr inliers_plane(new pcl::PointIndices());
+    seg_plane.segment(*inliers_plane, *coef_plane);
+    
+    // fallback to simple min‐z
+    float ground_z_plane = min_pt.z;
+    if (!inliers_plane->indices.empty()) {
+      double a_plane = coef_plane->values[0],
+             b_plane = coef_plane->values[1],
+             c_plane = coef_plane->values[2],
+             d_plane = coef_plane->values[3];
+      if (c_plane < 0) { a_plane = -a_plane; b_plane = -b_plane; c_plane = -c_plane; d_plane = -d_plane; }
+      double tilt_plane = std::abs(c_plane / std::sqrt(a_plane*a_plane + b_plane*b_plane + c_plane*c_plane));
+      if (tilt_plane > 0.9) {
+        double cx_plane = (min_pt.x + max_pt.x) * 0.5;
+        double cy_plane = (min_pt.y + max_pt.y) * 0.5;
+        ground_z_plane = -(a_plane*cx_plane + b_plane*cy_plane + d_plane) / c_plane;
+      }
+    }
+    
+    // 2) Compute XY bounds + margin
+    float dx_plane     = max_pt.x - min_pt.x;
+    float dy_plane     = max_pt.y - min_pt.y;
+    float span_plane   = std::max(dx_plane, dy_plane);
+    float margin_plane = span_plane * 0.5f;
+    
+    double xmin_plane = min_pt.x - margin_plane;
+    double xmax_plane = max_pt.x + margin_plane;
+    double ymin_plane = min_pt.y - margin_plane;
+    double ymax_plane = max_pt.y + margin_plane;
+    
+    // 3) Build a large rectangle at z = ground_z_plane
+    pcl::PointCloud<pcl::PointXYZ>::Ptr ground_rect_plane(new pcl::PointCloud<pcl::PointXYZ>);
+    ground_rect_plane->push_back({ 
+        static_cast<float>(xmin_plane), 
+        static_cast<float>(ymin_plane), 
+        static_cast<float>(ground_z_plane) 
+    });
+    ground_rect_plane->push_back({ 
+        static_cast<float>(xmax_plane), 
+        static_cast<float>(ymin_plane), 
+        static_cast<float>(ground_z_plane) 
+    });
+    ground_rect_plane->push_back({ 
+        static_cast<float>(xmax_plane), 
+        static_cast<float>(ymax_plane), 
+        static_cast<float>(ground_z_plane) 
+    });
+    ground_rect_plane->push_back({ 
+        static_cast<float>(xmin_plane), 
+        static_cast<float>(ymax_plane), 
+        static_cast<float>(ground_z_plane) 
+    });
+    
+    // 4) Add and style the polygon
+    viewer.addPolygon<pcl::PointXYZ>(ground_rect_plane, "ground_rect_plane", 0);
+    viewer.setShapeRenderingProperties(
+        pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
+        pcl::visualization::PCL_VISUALIZER_REPRESENTATION_SURFACE,
+        "ground_rect_plane");
+    viewer.setShapeRenderingProperties(
+        pcl::visualization::PCL_VISUALIZER_COLOR,
+        0.7, 0.7, 0.7,
+        "ground_rect_plane");
+    viewer.setShapeRenderingProperties(
+        pcl::visualization::PCL_VISUALIZER_OPACITY,
+        0.4,
+        "ground_rect_plane");
+
+    // Add point cloud
     viewer.addPointCloud<pcl::PointXYZI>(cloud_filtered, "kitti_cloud");
     viewer.setBackgroundColor(0,0,0);
     viewer.initCameraParameters();
@@ -106,8 +190,6 @@ int main(int argc, char** argv)
 
     // ---- bird's-eye initial view ----
     // compute axis‐aligned bounding box to find center
-    pcl::PointXYZI min_pt, max_pt;
-    pcl::getMinMax3D(*cloud_filtered, min_pt, max_pt);
     float cx = (min_pt.x + max_pt.x) * 0.5f;
     float cy = (min_pt.y + max_pt.y) * 0.5f;
     float cz = (min_pt.z + max_pt.z) * 0.5f;
