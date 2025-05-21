@@ -1,6 +1,13 @@
 BeaverLabeler
 ##############
 
+Data:
+```
+mkdir data && cd data
+get https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0020/2011_09_26_drive_0020_sync.zip
+unzip 2011_09_26_drive_0020_sync.zip
+```
+
 Build:
 ```
 sudo apt update
@@ -10,5 +17,10 @@ sudo apt install build-essential cmake \
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
-./BeaverLabeler
+
+```
+
+Run:
+```
+/run.sh data/2011_09_26/2011_09_26_drive_0020_sync/velodyne_points/data/0000000008.bin 
 ```
