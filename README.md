@@ -8,7 +8,15 @@ Features:
  - Color ground points
  - Fit boxes to ground plane
 
+### Hardware and Requirements
+Designed to work with Ubuntu 24. Requires Qt6, PCL, and VTK.
+
+Fully CPU based at the moment. CUDA libs can be compiled as well, but a bit more involved so holding off for now.
+
+Ran on a 64 thread AMD Epyc 7052 CPU, results may vary.
+
 ### Data
+Pull this small (0.4GB) kitti example to test with.
 ```
 mkdir data && cd data
 wget https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0020/2011_09_26_drive_0020_sync.zip
